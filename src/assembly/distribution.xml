@@ -61,6 +61,7 @@
             <outputDirectory>examples</outputDirectory>
             <includes>
                 <include>example-*.xml</include>
+                <include>example-*.json</include>
             </includes>
         </fileSet>
 

@@ -1,8 +1,9 @@
 # Changelog
 - 1.41 (In Development)
     - **NEW: Tool Registry System** - Register tools from existing Nexus locations without copying files
-      - Added `-register` command to register tools via XML manifest
+      - Added `-register` command to register tools via XML or JSON manifest
       - Tools can stay in their original repos, devtool just knows where to find them
+      - Supports both XML and JSON formats for registry files (JSON recommended for easier editing)
       - Supports flexible tool naming (multiple hyphens, e.g., apache-maven-3.8.6)
       - Accepts various ZIP formats with automatic reorganization during installation
     - **IMPROVED: ZIP Structure Handling**

@@ -1,0 +1,13 @@
+{
+  "name": "cmder",
+  "versions": [
+    {
+      "number": "1.3.20",
+      "nexusUrl": "https://nexus.firma.pl/repos/infra/utilities/cmder_mini.zip",
+      "zipStructure": {
+        "rootFolder": "cmder",
+        "flatRoot": "false"
+      }
+    }
+  ]
+}

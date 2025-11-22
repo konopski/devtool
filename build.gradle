@@ -59,6 +59,7 @@ applicationDistribution.from(".") {
 
 applicationDistribution.from(".") {
     include "example-*.xml"
+    include "example-*.json"
     into("examples")
 }
 

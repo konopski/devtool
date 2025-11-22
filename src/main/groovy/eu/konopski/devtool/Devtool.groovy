@@ -61,7 +61,7 @@ class Devtool {
             setup args: 2, valueSeparator: ' ', argName: 'toolname version', 'Sets up the given tools path with the specific version. For example: "jdk 1.5.0"'
             debug args: 0, 'Adds debug info'
             upload args: 1, valueSeparator: ' ', argName: 'path to the zipped tool', 'Uploads a new tool to nexus'
-            register args: 1, valueSeparator: ' ', argName: 'path to registry XML', 'Registers a tool from existing Nexus location via XML manifest'
+            register args: 1, valueSeparator: ' ', argName: 'path to registry file', 'Registers a tool from existing Nexus location via XML or JSON manifest'
             listnotinstalled args: 0, 'Shows the list of available tools not installed in any version'
         }
 
@@ -217,29 +217,36 @@ class Devtool {
             return
         }
 
-        // Parse XML to get tool name and versions
-        def registry = new XmlSlurper().parse(registryFile)
-        def toolName = registry.name.text()
-
-        if (!toolName) {
-            println "Registry XML must contain <name> element with tool name"
+        // Parse registry file (auto-detects XML or JSON)
+        def registry
+        try {
+            registry = parseRegistryFile(registryFile)
+        } catch (Exception e) {
+            println "Error parsing registry file: ${e.message}"
             return
         }
 
-        def versions = registry.versions.version
-        if (versions.size() == 0) {
-            println "Registry XML must contain at least one <version> element"
+        def toolName = registry.name
+        if (!toolName) {
+            println "Registry must contain 'name' field with tool name"
+            return
+        }
+
+        def versions = registry.versions
+        if (!versions || versions.size() == 0) {
+            println "Registry must contain at least one version"
             return
         }
 
         def versionsList = []
-        versions.each { versionsList.add(it.@number.text()) }
+        versions.each { versionsList.add(it.number) }
 
         println "Tool name: $toolName"
         println "Versions found: ${versionsList.join(', ')}"
 
-        // Upload registry XML to Nexus
-        def targetUrl = "$NEXUS_SERVER_URL/nexus/content/repositories/$NEXUS_REPOSITORY/devtool/registry/${toolName}.xml"
+        // Upload registry file to Nexus (preserve original extension)
+        def fileExtension = registryFile.name.substring(registryFile.name.lastIndexOf('.'))
+        def targetUrl = "$NEXUS_SERVER_URL/nexus/content/repositories/$NEXUS_REPOSITORY/devtool/registry/${toolName}${fileExtension}"
 
         println "Uploading registry to Nexus..."
         def passwordString = new String(nexusPassword)
@@ -529,15 +536,17 @@ class Devtool {
 
             xml.data.'content-item'.each { item ->
                 def fileName = item.text.text()
-                if (fileName.endsWith('.xml')) {
+                // Support both XML and JSON registry files
+                if (fileName.endsWith('.xml') || fileName.endsWith('.json')) {
                     try {
-                        def toolName = fileName.replace('.xml', '')
+                        def fileExtension = fileName.substring(fileName.lastIndexOf('.'))
+                        def toolName = fileName.replace(fileExtension, '')
                         def toolRegistryUrl = "$NEXUS_SERVER_URL/nexus/content/repositories/$NEXUS_REPOSITORY/devtool/registry/$fileName"
 
-                        def toolXml = new XmlSlurper().parse(toolRegistryUrl)
+                        def registry = parseRegistryFromUrl(toolRegistryUrl)
                         def versions = []
-                        toolXml.versions.version.each { versionNode ->
-                            versions.add(versionNode.@number.text())
+                        registry.versions.each { versionData ->
+                            versions.add(versionData.number)
                         }
 
                         if (versions.size() > 0) {
@@ -864,24 +873,91 @@ class Devtool {
         }
     }
 
-    String getToolRegistryUrl(String toolName) {
-        def registryUrl = "$NEXUS_SERVER_URL/nexus/content/repositories/$NEXUS_REPOSITORY/devtool/registry/${toolName}.xml"
-        debugln "Checking for registry at: $registryUrl"
-        try {
-            def conn = new URL(registryUrl).openConnection()
-            conn.setConnectTimeout(5000)
-            conn.setReadTimeout(5000)
-            conn.connect()
-            conn.getInputStream().close()
-            debugln "Registry found for $toolName"
-            return registryUrl
-        } catch (FileNotFoundException e) {
-            debugln "No registry found for $toolName"
-            return null
-        } catch (Exception e) {
-            debugln "Error checking registry for $toolName: ${e.message}"
-            return null
+    /**
+     * Parse registry file from File object - auto-detects XML or JSON format
+     */
+    Map parseRegistryFile(File file) {
+        def fileName = file.name.toLowerCase()
+
+        if (fileName.endsWith('.json')) {
+            debugln "Parsing JSON registry: ${file.name}"
+            return new groovy.json.JsonSlurper().parse(file)
+        } else if (fileName.endsWith('.xml')) {
+            debugln "Parsing XML registry: ${file.name}"
+            def xml = new XmlSlurper().parse(file)
+            // Convert XML to map format (same as JSON)
+            def result = [name: xml.name.text(), versions: []]
+            xml.versions.version.each { v ->
+                def versionMap = [number: v.@number.text(), nexusUrl: v.nexusUrl.text()]
+                if (v.zipStructure.size() > 0) {
+                    versionMap.zipStructure = [
+                        rootFolder: v.zipStructure.rootFolder.text(),
+                        flatRoot: v.zipStructure.flatRoot.text()
+                    ]
+                }
+                result.versions.add(versionMap)
+            }
+            return result
+        } else {
+            throw new Exception("Unsupported registry format: ${file.name}. Use .xml or .json")
         }
+    }
+
+    /**
+     * Parse registry from URL - auto-detects XML or JSON based on URL
+     */
+    Map parseRegistryFromUrl(String url) {
+        debugln "Parsing registry from URL: $url"
+
+        if (url.toLowerCase().endsWith('.json')) {
+            // Parse JSON from URL
+            def connection = new URL(url).openConnection()
+            connection.setConnectTimeout(5000)
+            connection.setReadTimeout(5000)
+            return new groovy.json.JsonSlurper().parse(connection.getInputStream())
+        } else {
+            // Parse XML from URL (default for backward compatibility)
+            def xml = new XmlSlurper().parse(url)
+            // Convert XML to map format
+            def result = [name: xml.name.text(), versions: []]
+            xml.versions.version.each { v ->
+                def versionMap = [number: v.@number.text(), nexusUrl: v.nexusUrl.text()]
+                if (v.zipStructure.size() > 0) {
+                    versionMap.zipStructure = [
+                        rootFolder: v.zipStructure.rootFolder.text(),
+                        flatRoot: v.zipStructure.flatRoot.text()
+                    ]
+                }
+                result.versions.add(versionMap)
+            }
+            return result
+        }
+    }
+
+    String getToolRegistryUrl(String toolName) {
+        // Try JSON first (preferred), then XML (backward compatibility)
+        def extensions = ['.json', '.xml']
+
+        for (ext in extensions) {
+            def registryUrl = "$NEXUS_SERVER_URL/nexus/content/repositories/$NEXUS_REPOSITORY/devtool/registry/${toolName}${ext}"
+            debugln "Checking for registry at: $registryUrl"
+            try {
+                def conn = new URL(registryUrl).openConnection()
+                conn.setConnectTimeout(5000)
+                conn.setReadTimeout(5000)
+                conn.connect()
+                conn.getInputStream().close()
+                debugln "Registry found for $toolName (${ext})"
+                return registryUrl
+            } catch (FileNotFoundException e) {
+                debugln "No ${ext} registry found for $toolName, trying next format"
+            } catch (Exception e) {
+                debugln "Error checking ${ext} registry for $toolName: ${e.message}"
+            }
+        }
+
+        debugln "No registry found for $toolName in any format"
+        return null
     }
 
     Map getToolFromRegistry(String toolName, String toolVersion) {
@@ -891,18 +967,13 @@ class Devtool {
         }
 
         try {
-            def registry = new XmlSlurper().parse(registryUrl)
-            def versionNode = registry.versions.version.find { it.@number.text() == toolVersion }
+            def registry = parseRegistryFromUrl(registryUrl)
+            def versionData = registry.versions.find { it.number == toolVersion }
 
-            if (versionNode) {
+            if (versionData) {
                 def result = [:]
-                result.nexusUrl = versionNode.nexusUrl.text()
-                result.zipStructure = [:]
-
-                if (versionNode.zipStructure.size() > 0) {
-                    result.zipStructure.rootFolder = versionNode.zipStructure.rootFolder.text()
-                    result.zipStructure.flatRoot = versionNode.zipStructure.flatRoot.text()
-                }
+                result.nexusUrl = versionData.nexusUrl
+                result.zipStructure = versionData.zipStructure ?: [:]
 
                 debugln "Found tool in registry: ${result.nexusUrl}"
                 return result

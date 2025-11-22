@@ -14,11 +14,11 @@ The registry system allows you to register tools from existing Nexus locations w
 
 ## How to Register a Tool
 
-### Step 1: Create Registry XML
+### Step 1: Create Registry File (XML or JSON)
 
-Create an XML file describing where your tool lives in Nexus:
+Create a registry file describing where your tool lives in Nexus. You can use either XML or JSON format:
 
-**keystoreexplorer-registry.xml:**
+**Option A: XML format** - `keystoreexplorer-registry.xml`
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <tool>
@@ -34,7 +34,24 @@ Create an XML file describing where your tool lives in Nexus:
 </tool>
 ```
 
-**Optional - Specify ZIP structure hints:**
+**Option B: JSON format** (recommended for easier editing) - `keystoreexplorer-registry.json`
+```json
+{
+  "name": "keystoreexplorer",
+  "versions": [
+    {
+      "number": "5.5.2",
+      "nexusUrl": "https://nexus.yourcompany.com/repos/security-team/tools/kse-5.5.2.zip"
+    },
+    {
+      "number": "5.4.0",
+      "nexusUrl": "https://nexus.yourcompany.com/repos/security-team/tools/kse-5.4.0.zip"
+    }
+  ]
+}
+```
+
+**Optional - Specify ZIP structure hints (XML):**
 ```xml
 <version number="5.5.2">
   <nexusUrl>https://nexus.yourcompany.com/repos/tools/kse-5.5.2.zip</nexusUrl>
@@ -45,18 +62,34 @@ Create an XML file describing where your tool lives in Nexus:
 </version>
 ```
 
+**Optional - Specify ZIP structure hints (JSON):**
+```json
+{
+  "number": "5.5.2",
+  "nexusUrl": "https://nexus.yourcompany.com/repos/tools/kse-5.5.2.zip",
+  "zipStructure": {
+    "rootFolder": "kse-5.5.2",
+    "flatRoot": "false"
+  }
+}
+```
+
 ### Step 2: Register the Tool
 
 ```bash
+# Register with XML
 devtool -register keystoreexplorer-registry.xml
+
+# OR register with JSON
+devtool -register keystoreexplorer-registry.json
 ```
 
 You'll be prompted for:
-- Nexus credentials (to upload registry XML)
+- Nexus credentials (to upload registry file)
 - Confluence credentials (to create announcement blog post)
 
 The tool will:
-1. Upload the registry XML to Nexus (`devtool/registry/` folder)
+1. Upload the registry file to Nexus (`devtool/registry/` folder)
 2. Regenerate the tool index
 3. Create a Confluence blog post announcing the new tool
 
@@ -72,10 +105,13 @@ devtool -install keystoreexplorer
 # Downloads from the URL specified in registry
 ```
 
-## Registry XML Schema
+## Registry Schema
 
-### Required Elements
+Both XML and JSON formats are supported. Choose whichever is easier for you to edit.
 
+### Required Fields
+
+**XML:**
 ```xml
 <tool>
   <name>toolname</name>              <!-- Tool identifier, no spaces -->
@@ -87,13 +123,37 @@ devtool -install keystoreexplorer
 </tool>
 ```
 
-### Optional Elements
+**JSON:**
+```json
+{
+  "name": "toolname",                 // Tool identifier, no spaces
+  "versions": [
+    {
+      "number": "X.Y.Z",              // Semantic version
+      "nexusUrl": "..."               // Full URL to ZIP file
+    }
+  ]
+}
+```
 
+### Optional Fields
+
+**XML:**
 ```xml
 <zipStructure>
   <rootFolder>foldername</rootFolder>  <!-- If ZIP has single root folder -->
   <flatRoot>true|false</flatRoot>      <!-- If files are directly in ZIP root -->
 </zipStructure>
+```
+
+**JSON:**
+```json
+{
+  "zipStructure": {
+    "rootFolder": "foldername",       // If ZIP has single root folder
+    "flatRoot": "false"               // If files are directly in ZIP root
+  }
+}
 ```
 
 ## Updating a Tool
