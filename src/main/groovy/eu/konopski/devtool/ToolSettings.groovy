@@ -1,11 +1,4 @@
-/*
- *
- * Copyright (c) 2017. Nordea Bank AB
- * Licensed under the MIT license (LICENSE.txt)
- *
- */
-
-package com.nordea.devtool
+package eu.konopski.devtool
 
 class ToolSettings {
 
