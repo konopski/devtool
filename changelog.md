@@ -1,4 +1,20 @@
 # Changelog
+- 1.41 (In Development)
+    - **NEW: Tool Registry System** - Register tools from existing Nexus locations without copying files
+      - Added `-register` command to register tools via XML manifest
+      - Tools can stay in their original repos, devtool just knows where to find them
+      - Supports flexible tool naming (multiple hyphens, e.g., apache-maven-3.8.6)
+      - Accepts various ZIP formats with automatic reorganization during installation
+    - **IMPROVED: ZIP Structure Handling**
+      - Relaxed ZIP validation - accepts non-standard structures
+      - Smart unzip with automatic reorganization to devtool format
+      - Handles single root folders, flat structures, and nested archives
+    - **IMPROVED: Tool Naming**
+      - Now supports tools with multiple hyphens in names
+      - Better version extraction from filenames
+    - **FIXED: Version Filter Regex**
+      - Fixed version filename filter to properly match single-digit versions
+    - See REGISTRY_USAGE.md for complete documentation
 - 1.40
     - Bumped to version 1.40
     - Added pull request "Version number alignement" from m1kah

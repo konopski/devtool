@@ -61,6 +61,7 @@ class Devtool {
             setup args: 2, valueSeparator: ' ', argName: 'toolname version', 'Sets up the given tools path with the specific version. For example: "jdk 1.5.0"'
             debug args: 0, 'Adds debug info'
             upload args: 1, valueSeparator: ' ', argName: 'path to the zipped tool', 'Uploads a new tool to nexus'
+            register args: 1, valueSeparator: ' ', argName: 'path to registry XML', 'Registers a tool from existing Nexus location via XML manifest'
             listnotinstalled args: 0, 'Shows the list of available tools not installed in any version'
         }
 
@@ -108,6 +109,8 @@ class Devtool {
 
         } else if (options.upload) {
             uploadTool(options.upload)
+        } else if (options.register) {
+            registerTool(options.register)
         } else {
             printUsage(cli)
         }
@@ -197,26 +200,113 @@ class Devtool {
         createBlogPost(toolName, toolVersion, confluenceUsername, confluencePassword.toString())
     }
 
+    def registerTool(String registryXmlPath) {
+        Console console = System.console()
+        String nexusUsername = console.readLine("Nexus username: ")
+        char[] nexusPassword = console.readPassword("Enter password for nexus: ")
+
+        String confluenceUsername = console.readLine("Confluence username: ")
+        char[] confluencePassword = console.readPassword("Enter password for confluence: ")
+
+        println "Registering tool from $registryXmlPath"
+
+        // Verify file exists
+        def registryFile = new File(registryXmlPath)
+        if (!registryFile.exists()) {
+            println "Could not find file $registryXmlPath"
+            return
+        }
+
+        // Parse XML to get tool name and versions
+        def registry = new XmlSlurper().parse(registryFile)
+        def toolName = registry.name.text()
+
+        if (!toolName) {
+            println "Registry XML must contain <name> element with tool name"
+            return
+        }
+
+        def versions = registry.versions.version
+        if (versions.size() == 0) {
+            println "Registry XML must contain at least one <version> element"
+            return
+        }
+
+        def versionsList = []
+        versions.each { versionsList.add(it.@number.text()) }
+
+        println "Tool name: $toolName"
+        println "Versions found: ${versionsList.join(', ')}"
+
+        // Upload registry XML to Nexus
+        def targetUrl = "$NEXUS_SERVER_URL/nexus/content/repositories/$NEXUS_REPOSITORY/devtool/registry/${toolName}.xml"
+
+        println "Uploading registry to Nexus..."
+        def passwordString = new String(nexusPassword)
+        def uploadCommand = "curl --insecure -v -u $nexusUsername:$passwordString --upload-file \"$registryXmlPath\" \"$targetUrl\""
+        debugln "uploadCommand = $uploadCommand"
+
+        Process p = uploadCommand.execute()
+        def outputStream = new StringBuffer()
+        def errorStream = new StringBuffer()
+        p.waitForProcessOutput(outputStream, errorStream)
+
+        debugln "$outputStream"
+        debugln "errorStream = $errorStream"
+        debugln "exitValue = ${p.exitValue()}"
+
+        if (errorStream.contains("401 Unauthorized")) {
+            println "Incorrect Nexus credentials!"
+            return
+        } else if (p.exitValue() != 0) {
+            println "Error uploading registry XML to Nexus"
+            println "Error: $errorStream"
+            return
+        }
+
+        println ansi().fgGreen().a("Registry uploaded successfully").reset()
+
+        // Regenerate tools and versions index
+        println "Regenerating tool index..."
+        def toolsAndVersionsFile = buildToolsAndVersionsFile()
+        deleteOldToolsAndVersionsFile(nexusUsername, passwordString)
+        uploadToolsAndVersionsFile(nexusUsername, passwordString, toolsAndVersionsFile)
+
+        println ansi().fgGreen().a("Tool index updated").reset()
+
+        // Create blog post about the registered tool - use first version as representative
+        def representativeVersion = versionsList.get(0)
+        createBlogPost(toolName, representativeVersion, confluenceUsername, confluencePassword.toString())
+
+        println ansi().fgGreen().a("\nTool '$toolName' registered successfully!").reset()
+        println "\nUsers can now install it with: devtool -install $toolName"
+    }
+
     boolean verifyZipFile(String toolpath) {
         if (!new File(toolpath).exists()) {
             println "Could not find file $toolpath"
             return false
         }
 
-        if (!zipped_tool_have_version_folder(toolpath)) {
-            println "Zipped tool is missing a folder with the same version number as the file"
-            return false
-        }
-        if (!zipped_tool_version_does_not_match(toolpath)) {
-            println "Zipped tool is missing a folder with the same version number as the file. Version mismatch."
-            return false
-        }
-
-        if (!zipped_tool_have_version_folder_only(toolpath)) {
-            println "Zipped tool have other files in the root of the zip than just a directory with the version number"
+        // Verify it's a valid ZIP file
+        try {
+            def zipFile = new ZipFile(toolpath)
+            zipFile.close()
+        } catch (Exception e) {
+            println "Invalid ZIP file: ${e.message}"
             return false
         }
 
+        // Check if it follows strict format (version folder)
+        if (zipped_tool_have_version_folder(toolpath) &&
+            zipped_tool_version_does_not_match(toolpath) &&
+            zipped_tool_have_version_folder_only(toolpath)) {
+            debugln "ZIP follows strict devtool format"
+            return true
+        }
+
+        // Relaxed mode - accept any valid ZIP structure
+        println "ZIP doesn't follow strict format, but will be accepted and reorganized during installation"
         return true
     }
 
@@ -234,7 +324,17 @@ class Devtool {
     String extractToolName(String toolNameAndVersion) { // c:\\sdds\\devtool-111.11.zip
         debugln "extractToolName $toolNameAndVersion"
 
-        def matcher = toolNameAndVersion =~ "(\\w+)"
+        // Remove .zip extension if present
+        def nameWithoutExt = toolNameAndVersion.replaceAll(/\.zip$/, '')
+
+        // Try to match pattern: anything-version where version is digits and dots
+        def matcher = nameWithoutExt =~ /^(.+?)-(\d+[\d.]*)$/
+        if (matcher) {
+            return matcher[0][1]  // Return everything before the last version
+        }
+
+        // Fallback to old behavior - just get first word
+        matcher = nameWithoutExt =~ /(\w+)/
         if (matcher.getCount() > 0) {
             return matcher[0][0]
         }
@@ -243,13 +343,12 @@ class Devtool {
 
     boolean verifyToolName(String toolName) {
         boolean verified = false
-        if (toolName.findAll("-").size() > 1) {
-            verified = false
-        } else if (!extractToolName(toolName).isEmpty() && !extractToolVersion(toolName).isEmpty()) {
+        // Removed check for multiple hyphens - now supports names like apache-maven-3.8.6.zip
+        if (!extractToolName(toolName).isEmpty() && !extractToolVersion(toolName).isEmpty()) {
             verified = true
         }
         if (!verified) {
-            println "Naming of file is not correct. Should be eg: 'toolname-X.X.X.zip"
+            println "Naming of file is not correct. Should be eg: 'toolname-X.X.X.zip' or 'my-tool-name-X.X.X.zip'"
         }
         return verified
     }
@@ -380,11 +479,34 @@ class Devtool {
 
     File buildToolsAndVersionsFile() {
         def output = new StringBuilder()
+        def allTools = [:]
+
+        // Get tools from standard location
         for (toolName in getRemoteSortedToolsList()) {
-            output.append(toolName)
-
             def toolVersions = getVersionsForRemoteTool(toolName)
+            allTools[toolName] = toolVersions
+        }
 
+        // Get tools from registry
+        def registryTools = getToolsFromRegistry()
+        registryTools.each { toolData ->
+            if (allTools.containsKey(toolData.name)) {
+                // Merge versions
+                def existingVersions = allTools[toolData.name]
+                toolData.versions.each { version ->
+                    if (!existingVersions.contains(version)) {
+                        existingVersions.add(version)
+                    }
+                }
+            } else {
+                // New tool from registry
+                allTools[toolData.name] = toolData.versions
+            }
+        }
+
+        // Sort tools alphabetically and write to output
+        allTools.sort().each { toolName, toolVersions ->
+            output.append(toolName)
             toolVersions.each { version ->
                 output.append(";" + version)
             }
@@ -395,6 +517,45 @@ class Devtool {
         tempFile.deleteOnExit()
         tempFile.write(output.toString())
         return tempFile
+    }
+
+    List getToolsFromRegistry() {
+        def registryUrl = "$NEXUS_SERVER_URL/nexus/service/local/repositories/$NEXUS_REPOSITORY/content/devtool/registry"
+        def tools = []
+
+        try {
+            debugln "Checking for tools in registry: $registryUrl"
+            def xml = new XmlSlurper().parse(registryUrl)
+
+            xml.data.'content-item'.each { item ->
+                def fileName = item.text.text()
+                if (fileName.endsWith('.xml')) {
+                    try {
+                        def toolName = fileName.replace('.xml', '')
+                        def toolRegistryUrl = "$NEXUS_SERVER_URL/nexus/content/repositories/$NEXUS_REPOSITORY/devtool/registry/$fileName"
+
+                        def toolXml = new XmlSlurper().parse(toolRegistryUrl)
+                        def versions = []
+                        toolXml.versions.version.each { versionNode ->
+                            versions.add(versionNode.@number.text())
+                        }
+
+                        if (versions.size() > 0) {
+                            tools.add([name: toolName, versions: versions])
+                            debugln "Found tool in registry: $toolName with ${versions.size()} versions"
+                        }
+                    } catch (Exception e) {
+                        debugln "Error reading registry for ${fileName}: ${e.message}"
+                    }
+                }
+            }
+        } catch (FileNotFoundException e) {
+            debugln "No registry directory found - this is OK, registry is optional"
+        } catch (Exception e) {
+            debugln "Error scanning registry: ${e.message}"
+        }
+
+        return tools
     }
 
     void uploadToolsAndVersionsFile(String nexusUserName, String nexusPassword, File buildToolsAndVersionsFile) {
@@ -600,23 +761,88 @@ class Devtool {
         String sourceDir = getToolsSourceDir() + "/" + toolName + "/" + toolVersion
         String destDir = getToolsDestinationDir() + sepChar + toolName
 
-        validateDirs(sourceDir, getToolsDestinationDir())
-
         def ant = new AntBuilder()
 
         def toolnameVersionZip = toolName + "-" + toolVersion + ".zip"
-
         def remoteZipFile = sourceDir + "/" + toolnameVersionZip
+
+        // Check if tool is in registry first
+        def registryData = getToolFromRegistry(toolName, toolVersion)
+        if (registryData) {
+            println "Tool found in registry, downloading from: ${registryData.nexusUrl}"
+            remoteZipFile = registryData.nexusUrl
+        } else {
+            // Standard location - validate it exists
+            validateDirs(sourceDir, getToolsDestinationDir())
+        }
+
         def localZipFile = destDir + sepChar + toolnameVersionZip
 
         new File(destDir).mkdirs()
         def zipDist = destDir + sepChar + toolnameVersionZip
         copyFile(toolName + "-" + toolVersion, remoteZipFile, zipDist)
-        ant.unzip(src: localZipFile, dest: destDir, overwrite: "true")
-        sleep(250) // this pause is to make sure windows has released the file hook for the zip file to be deleted
+
+        // Unzip and reorganize if needed
+        def tempUnzipDir = destDir + sepChar + "temp_unzip"
+        ant.unzip(src: localZipFile, dest: tempUnzipDir, overwrite: "true")
+        sleep(250)
+
+        // Smart reorganization - ensure tool is in version subfolder
+        reorganizeToolStructure(tempUnzipDir, destDir, toolVersion, registryData)
+
+        // Cleanup
         ant.delete(file: localZipFile, quiet: true)
+        ant.delete(dir: tempUnzipDir, quiet: true)
 
         setToolPathAndVariables(toolName, toolVersion)
+    }
+
+    void reorganizeToolStructure(String tempDir, String destDir, String toolVersion, Map registryData) {
+        def tempDirFile = new File(tempDir)
+        def targetVersionDir = new File(destDir + sepChar + toolVersion)
+
+        if (!tempDirFile.exists()) {
+            println "Error: temp unzip directory not found"
+            return
+        }
+
+        def entries = tempDirFile.listFiles()
+        if (entries == null || entries.length == 0) {
+            println "Warning: ZIP appears to be empty"
+            return
+        }
+
+        // Check if already in correct format (single folder named after version)
+        if (entries.length == 1 && entries[0].isDirectory() && entries[0].name == toolVersion) {
+            debugln "ZIP already in correct format, moving directly"
+            def ant = new AntBuilder()
+            ant.move(file: entries[0].absolutePath, tofile: targetVersionDir.absolutePath)
+            return
+        }
+
+        // Check if there's a single root folder (common pattern)
+        if (entries.length == 1 && entries[0].isDirectory()) {
+            debugln "ZIP has single root folder, reorganizing"
+            def ant = new AntBuilder()
+            targetVersionDir.mkdirs()
+
+            // Move contents of the single folder to version folder
+            def innerFiles = entries[0].listFiles()
+            if (innerFiles != null) {
+                innerFiles.each { file ->
+                    ant.move(file: file.absolutePath, todir: targetVersionDir.absolutePath)
+                }
+            }
+            return
+        }
+
+        // Multiple files/folders in root or flat structure - move everything
+        debugln "ZIP has multiple items in root, moving all to version folder"
+        targetVersionDir.mkdirs()
+        def ant = new AntBuilder()
+        entries.each { file ->
+            ant.move(file: file.absolutePath, todir: targetVersionDir.absolutePath)
+        }
     }
 
     void setupTool(String toolName, String version) {
@@ -636,6 +862,56 @@ class Devtool {
             println "Tool $toolName with version $version is not installed"
             System.exit(-1)
         }
+    }
+
+    String getToolRegistryUrl(String toolName) {
+        def registryUrl = "$NEXUS_SERVER_URL/nexus/content/repositories/$NEXUS_REPOSITORY/devtool/registry/${toolName}.xml"
+        debugln "Checking for registry at: $registryUrl"
+        try {
+            def conn = new URL(registryUrl).openConnection()
+            conn.setConnectTimeout(5000)
+            conn.setReadTimeout(5000)
+            conn.connect()
+            conn.getInputStream().close()
+            debugln "Registry found for $toolName"
+            return registryUrl
+        } catch (FileNotFoundException e) {
+            debugln "No registry found for $toolName"
+            return null
+        } catch (Exception e) {
+            debugln "Error checking registry for $toolName: ${e.message}"
+            return null
+        }
+    }
+
+    Map getToolFromRegistry(String toolName, String toolVersion) {
+        def registryUrl = getToolRegistryUrl(toolName)
+        if (!registryUrl) {
+            return null
+        }
+
+        try {
+            def registry = new XmlSlurper().parse(registryUrl)
+            def versionNode = registry.versions.version.find { it.@number.text() == toolVersion }
+
+            if (versionNode) {
+                def result = [:]
+                result.nexusUrl = versionNode.nexusUrl.text()
+                result.zipStructure = [:]
+
+                if (versionNode.zipStructure.size() > 0) {
+                    result.zipStructure.rootFolder = versionNode.zipStructure.rootFolder.text()
+                    result.zipStructure.flatRoot = versionNode.zipStructure.flatRoot.text()
+                }
+
+                debugln "Found tool in registry: ${result.nexusUrl}"
+                return result
+            }
+        } catch (Exception e) {
+            debugln "Error reading registry for $toolName: ${e.message}"
+        }
+
+        return null
     }
 
     void copyFile(String toolNameAndVersion, String src, String dest) {
@@ -833,7 +1109,8 @@ class Devtool {
         new FilenameFilter() {
             @Override
             boolean accept(File dir, String name) {
-                return name.matches("(\\d*\\.)*\\d*")
+                // Match version numbers like: 1, 1.0, 1.2.3, 11.0.2, etc.
+                return name.matches("\\d+(\\.\\d+)*")
             }
         }
     }

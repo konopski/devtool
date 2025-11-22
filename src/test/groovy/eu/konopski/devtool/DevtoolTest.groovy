@@ -81,7 +81,9 @@ class DevtoolTest {
 
         def versions = srcFolder.getRoot().list(devtool.getVersionFilenameFilter())
 
+        // Sort versions since list() doesn't guarantee order
         String[] versionsExpected = ["1", "2.2.2"]
+        Arrays.sort(versions)
         assertEquals(versionsExpected, versions)
     }
 
@@ -183,7 +185,12 @@ class DevtoolTest {
         s = "CRAzytool-1.0.zip"
         assertTrue(devtool.verifyToolName(s))
 
+        // Now supports multiple hyphens
         s = "crazy-tool-1.0.zip"
+        assertTrue(devtool.verifyToolName(s))
+
+        // Should fail - no version
+        s = "toolname-without-version.zip"
         assertFalse(devtool.verifyToolName(s))
     }
 

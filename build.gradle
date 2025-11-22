@@ -53,6 +53,13 @@ applicationDistribution.from("${buildDir}/jre") {
 
 applicationDistribution.from(".") {
     include "changelog.md"
+    include "readme.md"
+    include "REGISTRY_USAGE.md"
+}
+
+applicationDistribution.from(".") {
+    include "example-*.xml"
+    into("examples")
 }
 
 mainClassName = "eu.konopski.devtool.Devtool"
